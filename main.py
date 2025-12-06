@@ -8,89 +8,106 @@ import urllib.parse
 import json
 import os
 
-
-class SimpleDNS:
-    def __init__(self, block_ip='127.0.0.1', port=53):
-        self.block_ip = block_ip
+class SmartDNS:
+    def __init__(self, web_ip='127.0.0.1', port=5353):
+        self.web_ip = web_ip
         self.port = port
         self.sock = None
-        self.running = False  # Bandera para controlar el bucle
+        self.running = False
+        self.dispositivos_bloqueados = {}  # IP -> timestamp
+        self.dispositivos_permitidos = set()  # IPs que ya hicieron login
+        self.dns_real = "8.8.8.8"  # DNS de Google
+        self.dns_alternativo = "1.1.1.1"  # DNS de Cloudflare
         self.lock = threading.Lock()
     
     def setup_socket(self):
-        """Configurar el socket DNS"""
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock.bind(('', self.port))
-        self.sock.settimeout(1.0)  # Timeout para poder verificar self.running
+        self.sock.settimeout(1.0)
+    
+    def manejar_dns_externo(self, data, addr):
+        """Consultar a DNS real y reenviar respuesta"""
+        try:
+            # Crear socket para consultar DNS real
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as dns_socket:
+                dns_socket.settimeout(2.0)
+                dns_socket.sendto(data, (self.dns_real, 53))
+                respuesta, _ = dns_socket.recvfrom(512)
+                return respuesta
+        except:
+            return None
     
     def handle_dns_query(self, data, addr):
-        """Manejar una consulta DNS individual"""
+        """Manejar consulta DNS inteligentemente"""
         try:
-            # Respuesta DNS simple que redirige todo a block_ip
-            response = data[:2] + b'\x81\x80'  # Transaction ID + Flags
-            response += data[4:6] + data[4:6]  # Questions + Answer RRs
-            response += b'\x00\x00\x00\x00'    # Authority + Additional RRs
-            response += data[12:]              # Original query
-            response += b'\xc0\x0c'            # Pointer to domain name
-            response += b'\x00\x01\x00\x01'    # Type A, Class IN
-            response += b'\x00\x00\x00\x3c'    # TTL 60 seconds
-            response += b'\x00\x04'            # Data length
-            response += socket.inet_aton(self.block_ip)  # IP address
+            client_ip = addr[0]
             
             with self.lock:
-                if self.sock and self.running:
+                # Verificar si este dispositivo ya hizo login
+                if client_ip in self.dispositivos_permitidos:
+                    # CONSULTA DNS REAL
+                    respuesta_real = self.manejar_dns_externo(data, addr)
+                    if respuesta_real:
+                        self.sock.sendto(respuesta_real, addr)
+                        print(f"🌐 DNS Real para {client_ip}")
+                    return
+                else:
+                    # BLOQUEAR - redirigir a portal de login
+                    self.dispositivos_bloqueados[client_ip] = time.time()
+                    
+                    # Respuesta DNS que redirige todo a nuestro servidor web
+                    response = data[:2] + b'\x81\x80'
+                    response += data[4:6] + data[4:6]
+                    response += b'\x00\x00\x00\x00'
+                    response += data[12:]
+                    response += b'\xc0\x0c'
+                    response += b'\x00\x01\x00\x01'
+                    response += b'\x00\x00\x00\x3c'
+                    response += b'\x00\x04'
+                    response += socket.inet_aton(self.web_ip)
+                    
                     self.sock.sendto(response, addr)
+                    print(f"🔒 DNS Bloqueado para {client_ip}")
+                    
         except Exception as e:
-            if self.running:
-                print(f"Error en consulta DNS: {e}")
+            print(f"Error DNS: {e}")
+    
+    def permitir_dispositivo(self, client_ip):
+        """Permitir que un dispositivo use DNS real"""
+        with self.lock:
+            if client_ip in self.dispositivos_bloqueados:
+                del self.dispositivos_bloqueados[client_ip]
+            
+            self.dispositivos_permitidos.add(client_ip)
+            print(f"✅ Permitiendo DNS real para: {client_ip}")
     
     def run(self):
-        """Método principal que se ejecuta en el hilo"""
         try:
             self.setup_socket()
             self.running = True
-            print(f"✅ Servidor DNS bloqueador ejecutándose en puerto {self.port}")
+            
+            print(f"✅ DNS Inteligente en puerto {self.port}")
+            print(f"   DNS Real: {self.dns_real}")
+            print(f"   Portal: {self.web_ip}:8443")
             
             while self.running:
                 try:
                     data, addr = self.sock.recvfrom(512)
                     if self.running:
-                        # Procesar en un hilo separado
                         threading.Thread(
-                            target=self.handle_dns_query, 
+                            target=self.handle_dns_query,
                             args=(data, addr),
                             daemon=True
                         ).start()
                 except socket.timeout:
-                    continue  # Timeout normal, verificar si seguimos running
-                except Exception as e:
-                    if self.running:
-                        print(f"Error recibiendo datos DNS: {e}")
+                    continue
         except Exception as e:
-            print(f"❌ Error iniciando servidor DNS: {e}")
-            if self.port == 53:
-                print("   Nota: El puerto 53 requiere permisos de administrador (sudo)")
+            print(f"❌ Error DNS: {e}")
     
     def stop(self):
-        """Detener el servidor DNS de forma segura"""
-        print("\n🛑 Deteniendo servidor DNS...")
         self.running = False
-        
-        # Cerrar el socket para desbloquear recvfrom()
         if self.sock:
-            try:
-                # Enviar un paquete dummy para desbloquear
-                temp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-                temp_sock.sendto(b'', ('127.0.0.1', self.port))
-                temp_sock.close()
-            except:
-                pass
-            
-            # Cerrar el socket principal
             self.sock.close()
-            self.sock = None
-        
-        print("✅ Servidor DNS detenido")
 
 class MyHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
     def send_headers(self):
@@ -119,8 +136,10 @@ class MyHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
                 self.send_response(200)
                 self.send_header('Content-type', 'text/html; charset=utf-8')
                 self.end_headers()
-                
+                client_ip = self.client_address[0]
+
                 if es_valido:
+                    dns_server.permitir_dispositivo(client_ip)
                     html = f'''
                     <!DOCTYPE html>
                     <html>
@@ -233,7 +252,7 @@ print("🌐 SISTEMA DE REDIRECCIÓN DNS")
 print("=" * 50)
 
 # Crear instancia del servidor DNS
-dns_server = SimpleDNS(ip_local, 5353)  # Cambiado a puerto 5353 para no requerir sudo
+dns_server = SmartDNS(web_ip=ip_local, port=5353)
 # Nota: Si quieres usar puerto 53, ejecuta con: sudo python main.py
 
 # Iniciar el servidor DNS en un hilo
