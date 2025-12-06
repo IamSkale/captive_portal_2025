@@ -4,6 +4,10 @@ import socket
 import threading
 import signal
 import sys
+import urllib.parse
+import json
+import os
+
 
 class SimpleDNS:
     def __init__(self, block_ip='127.0.0.1', port=53):
@@ -89,9 +93,110 @@ class SimpleDNS:
         print("✅ Servidor DNS detenido")
 
 class MyHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
-    def end_headers(self):
+    def send_headers(self):
         self.send_header('Access-Control-Allow-Origin', '*')
-        super().end_headers()
+        super().send_headers()
+
+    def do_GET(self):
+        """Manejar solicitudes GET (incluyendo login por URL)"""
+        # Verificar si la URL contiene credenciales (ej: /?user=juan&pass=123)
+        if '?' in self.path:
+            # Separar la ruta de los parámetros
+            path, query_string = self.path.split('?', 1)
+            
+            # Parsear los parámetros de la URL
+            params = urllib.parse.parse_qs(query_string)
+            
+            # Extraer credenciales (soportar diferentes nombres)
+            username = params.get('username', params.get('user', params.get('usuario', [''])))[0]
+            password = params.get('password', params.get('pass', params.get('contrasenna', [''])))[0]
+            
+            if username and password:
+                # Verificar credenciales contra el JSON
+                es_valido = self.verificar_credenciales(username, password)
+                
+                # Mostrar resultado
+                self.send_response(200)
+                self.send_header('Content-type', 'text/html; charset=utf-8')
+                self.end_headers()
+                
+                if es_valido:
+                    html = f'''
+                    <!DOCTYPE html>
+                    <html>
+                    <head>
+                        <title>Acceso Concedido</title>
+                        <style>
+                            body {{ font-family: Arial; text-align: center; padding: 50px; }}
+                            .success {{ color: green; font-size: 24px; margin: 20px 0; }}
+                            .info {{ background: #f0f0f0; padding: 20px; border-radius: 10px; }}
+                        </style>
+                    </head>
+                    <body>
+                        <div class="success">✅ ACCESO CONCEDIDO</div>
+                        <div class="info">
+                            <p>Bienvenido, <strong>{username}</strong></p>
+                            <p>Tu dispositivo ahora tiene acceso a internet.</p>
+                        </div>
+                        <p><small>Esta sesión será monitoreada para seguridad de la red.</small></p>
+                    </body>
+                    </html>
+                    '''
+                else:
+                    html = '''
+                    <!DOCTYPE html>
+                    <html>
+                    <head>
+                        <title>Acceso Denegado</title>
+                        <style>
+                            body { font-family: Arial; text-align: center; padding: 50px; }
+                            .error { color: red; font-size: 24px; margin: 20px 0; }
+                            .warning { background: #ffe6e6; padding: 20px; border-radius: 10px; }
+                        </style>
+                    </head>
+                    <body>
+                        <div class="error">❌ ACCESO DENEGADO</div>
+                        <div class="warning">
+                            <p>Usuario o contraseña incorrectos.</p>
+                            <p>Por favor, verifica tus credenciales.</p>
+                        </div>
+                        <p><a href="/">Volver al login</a></p>
+                    </body>
+                    </html>
+                    '''
+                
+                self.wfile.write(html.encode('utf-8'))
+                return
+        
+        # Si no hay credenciales en la URL, servir archivos normalmente
+        return super().do_GET()
+    
+    def verificar_credenciales(self, username, password):
+        """Verificar credenciales contra un archivo JSON"""
+        try:
+            # Cargar archivo JSON de usuarios
+            if os.path.exists('users.json'):
+                with open('users.json', 'r', encoding='utf-8') as f:
+                    usuarios = json.load(f)
+                
+                # Buscar usuario en la lista
+                for usuario in usuarios.get('usuarios', []):
+                    if (usuario.get('username') == username and 
+                        usuario.get('password') == password):
+                        
+                        print(f"✅ Login válido: {username}")
+                        return True
+                
+                print(f"❌ Login fallido: {username}")
+                return False
+            else:
+                print("⚠️  Archivo usuarios.json no encontrado")
+                return False
+                
+        except Exception as e:
+            print(f"❌ Error verificando credenciales: {e}")
+            return False
+
 
 def obtener_ip():
     """Obtener la IP local de la máquina"""
