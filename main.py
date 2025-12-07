@@ -1,6 +1,5 @@
-import http.server
-import socketserver
 import socket
+import time
 import threading
 import signal
 import sys
@@ -109,112 +108,169 @@ class SmartDNS:
         if self.sock:
             self.sock.close()
 
-class MyHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
-    def send_headers(self):
-        self.send_header('Access-Control-Allow-Origin', '*')
-        super().send_headers()
+def verificar_credenciales(username, password):
+    """Verificar credenciales contra un archivo JSON (función de módulo)."""
+    try:
+        if os.path.exists('users.json'):
+            with open('users.json', 'r', encoding='utf-8') as f:
+                usuarios = json.load(f)
 
-    def do_GET(self):
-        """Manejar solicitudes GET (incluyendo login por URL)"""
-        # Verificar si la URL contiene credenciales (ej: /?user=juan&pass=123)
-        if '?' in self.path:
-            # Separar la ruta de los parámetros
-            path, query_string = self.path.split('?', 1)
-            
-            # Parsear los parámetros de la URL
-            params = urllib.parse.parse_qs(query_string)
-            
-            # Extraer credenciales (soportar diferentes nombres)
-            username = params.get('username', params.get('user', params.get('usuario', [''])))[0]
-            password = params.get('password', params.get('pass', params.get('contrasenna', [''])))[0]
-            
-            if username and password:
-                # Verificar credenciales contra el JSON
-                es_valido = self.verificar_credenciales(username, password)
-                
-                # Mostrar resultado
-                self.send_response(200)
-                self.send_header('Content-type', 'text/html; charset=utf-8')
-                self.end_headers()
-                client_ip = self.client_address[0]
+            for usuario in usuarios.get('usuarios', []):
+                if (usuario.get('username') == username and 
+                    usuario.get('password') == password):
+                    print(f"✅ Login válido: {username}")
+                    return True
+
+            print(f"❌ Login fallido: {username}")
+            return False
+        else:
+            print("⚠️  Archivo usuarios.json no encontrado")
+            return False
+    except Exception as e:
+        print(f"❌ Error verificando credenciales: {e}")
+        return False
+
+
+class ManualHTTPServer:
+    """Servidor HTTP simple hecho con sockets que maneja GET y login por querystring."""
+    def __init__(self, host='0.0.0.0', port=8443, dns_server=None):
+        self.host = host
+        self.port = port
+        self.dns_server = dns_server
+        self.sock = None
+        self.running = False
+        self.thread = None
+
+    def start(self):
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.sock.bind((self.host, self.port))
+        self.sock.listen(5)
+        self.sock.settimeout(1.0)
+        self.running = True
+        self.thread = threading.Thread(target=self._serve_loop, daemon=True)
+        self.thread.start()
+
+    def stop(self):
+        self.running = False
+        try:
+            if self.sock:
+                self.sock.close()
+        except Exception:
+            pass
+
+    def _serve_loop(self):
+        while self.running:
+            try:
+                conn, addr = self.sock.accept()
+                threading.Thread(target=self._handle_client, args=(conn, addr), daemon=True).start()
+            except socket.timeout:
+                continue
+            except Exception as e:
+                print(f"Error aceptando conexión HTTP: {e}")
+
+    def _handle_client(self, conn, addr):
+        try:
+            conn.settimeout(2.0)
+            data = b''
+            while b'\r\n\r\n' not in data:
+                chunk = conn.recv(1024)
+                if not chunk:
+                    break
+                data += chunk
+
+            request_text = data.decode('utf-8', errors='ignore')
+            lines = request_text.splitlines()
+            if not lines:
+                conn.close()
+                return
+
+            request_line = lines[0]
+            parts = request_line.split()
+            if len(parts) < 2:
+                conn.close()
+                return
+
+            method, full_path = parts[0], parts[1]
+            parsed = urllib.parse.urlparse(full_path)
+            params = urllib.parse.parse_qs(parsed.query)
+            client_ip = addr[0]
+
+            # Si hay credenciales en la URL
+            username = params.get('username', params.get('user', params.get('usuario', [''])))[0] if params else ''
+            password = params.get('password', params.get('pass', params.get('contrasenna', [''])))[0] if params else ''
+
+            if method == 'GET' and username and password:
+                es_valido = verificar_credenciales(username, password)
+                if es_valido and self.dns_server:
+                    self.dns_server.permitir_dispositivo(client_ip)
 
                 if es_valido:
-                    dns_server.permitir_dispositivo(client_ip)
-                    html = f'''
-                    <!DOCTYPE html>
-                    <html>
-                    <head>
-                        <title>Acceso Concedido</title>
-                        <style>
-                            body {{ font-family: Arial; text-align: center; padding: 50px; }}
-                            .success {{ color: green; font-size: 24px; margin: 20px 0; }}
-                            .info {{ background: #f0f0f0; padding: 20px; border-radius: 10px; }}
-                        </style>
-                    </head>
-                    <body>
-                        <div class="success">✅ ACCESO CONCEDIDO</div>
-                        <div class="info">
-                            <p>Bienvenido, <strong>{username}</strong></p>
-                            <p>Tu dispositivo ahora tiene acceso a internet.</p>
-                        </div>
-                        <p><small>Esta sesión será monitoreada para seguridad de la red.</small></p>
-                    </body>
-                    </html>
-                    '''
+                    body = f'''<!DOCTYPE html><html><head><title>Acceso Concedido</title></head><body><h2>✅ ACCESO CONCEDIDO</h2><p>Bienvenido, <strong>{username}</strong></p></body></html>'''
                 else:
-                    html = '''
-                    <!DOCTYPE html>
-                    <html>
-                    <head>
-                        <title>Acceso Denegado</title>
-                        <style>
-                            body { font-family: Arial; text-align: center; padding: 50px; }
-                            .error { color: red; font-size: 24px; margin: 20px 0; }
-                            .warning { background: #ffe6e6; padding: 20px; border-radius: 10px; }
-                        </style>
-                    </head>
-                    <body>
-                        <div class="error">❌ ACCESO DENEGADO</div>
-                        <div class="warning">
-                            <p>Usuario o contraseña incorrectos.</p>
-                            <p>Por favor, verifica tus credenciales.</p>
-                        </div>
-                        <p><a href="/">Volver al login</a></p>
-                    </body>
-                    </html>
-                    '''
-                
-                self.wfile.write(html.encode('utf-8'))
+                    body = '''<!DOCTYPE html><html><head><title>Acceso Denegado</title></head><body><h2>❌ ACCESO DENEGADO</h2><p>Usuario o contraseña incorrectos.</p><p><a href="/">Volver al login</a></p></body></html>'''
+
+                resp = 'HTTP/1.1 200 OK\r\n'
+                resp += 'Content-Type: text/html; charset=utf-8\r\n'
+                resp += f'Content-Length: {len(body.encode("utf-8"))}\r\n'
+                resp += 'Access-Control-Allow-Origin: *\r\n'
+                resp += 'Connection: close\r\n\r\n'
+                conn.sendall(resp.encode('utf-8') + body.encode('utf-8'))
+                conn.close()
                 return
-        
-        # Si no hay credenciales en la URL, servir archivos normalmente
-        return super().do_GET()
-    
-    def verificar_credenciales(self, username, password):
-        """Verificar credenciales contra un archivo JSON"""
-        try:
-            # Cargar archivo JSON de usuarios
-            if os.path.exists('users.json'):
-                with open('users.json', 'r', encoding='utf-8') as f:
-                    usuarios = json.load(f)
-                
-                # Buscar usuario en la lista
-                for usuario in usuarios.get('usuarios', []):
-                    if (usuario.get('username') == username and 
-                        usuario.get('password') == password):
-                        
-                        print(f"✅ Login válido: {username}")
-                        return True
-                
-                print(f"❌ Login fallido: {username}")
-                return False
-            else:
-                print("⚠️  Archivo usuarios.json no encontrado")
-                return False
-                
+
+            # Si la ruta es '/' servir un formulario simple
+            if parsed.path == '/' or parsed.path == '':
+                body = '''<!DOCTYPE html><html><head><meta charset="utf-8"><title>Login</title></head><body><h2>Portal de Acceso</h2><form method="get" action="/">Usuario: <input name="user"><br>Contraseña: <input name="pass" type="password"><br><button type="submit">Entrar</button></form></body></html>'''
+                resp = 'HTTP/1.1 200 OK\r\n'
+                resp += 'Content-Type: text/html; charset=utf-8\r\n'
+                resp += f'Content-Length: {len(body.encode("utf-8"))}\r\n'
+                resp += 'Access-Control-Allow-Origin: *\r\n'
+                resp += 'Connection: close\r\n\r\n'
+                conn.sendall(resp.encode('utf-8') + body.encode('utf-8'))
+                conn.close()
+                return
+
+            # Intentar servir archivo estático relativo al path
+            file_path = parsed.path.lstrip('/')
+            if file_path and os.path.exists(file_path) and os.path.isfile(file_path):
+                try:
+                    with open(file_path, 'rb') as f:
+                        content = f.read()
+                    mime = 'application/octet-stream'
+                    if file_path.endswith('.html') or file_path.endswith('.htm'):
+                        mime = 'text/html; charset=utf-8'
+                    elif file_path.endswith('.css'):
+                        mime = 'text/css'
+                    elif file_path.endswith('.js'):
+                        mime = 'application/javascript'
+
+                    resp = 'HTTP/1.1 200 OK\r\n'
+                    resp += f'Content-Type: {mime}\r\n'
+                    resp += f'Content-Length: {len(content)}\r\n'
+                    resp += 'Access-Control-Allow-Origin: *\r\n'
+                    resp += 'Connection: close\r\n\r\n'
+                    conn.sendall(resp.encode('utf-8') + content)
+                    conn.close()
+                    return
+                except Exception as e:
+                    print(f"Error leyendo archivo {file_path}: {e}")
+
+            # Si nada aplica, responder 404
+            body = '<h1>404 Not Found</h1>'
+            resp = 'HTTP/1.1 404 Not Found\r\n'
+            resp += 'Content-Type: text/html; charset=utf-8\r\n'
+            resp += f'Content-Length: {len(body.encode("utf-8"))}\r\n'
+            resp += 'Connection: close\r\n\r\n'
+            conn.sendall(resp.encode('utf-8') + body.encode('utf-8'))
+            conn.close()
+
         except Exception as e:
-            print(f"❌ Error verificando credenciales: {e}")
-            return False
+            try:
+                conn.close()
+            except Exception:
+                pass
+            print(f"Error manejando cliente HTTP {addr}: {e}")
 
 
 def obtener_ip():
@@ -263,27 +319,30 @@ dns_thread.start()
 import time
 time.sleep(0.5)
 
-# Iniciar el servidor web
+# Iniciar el servidor web (servidor HTTP manual)
 try:
-    with socketserver.TCPServer(("", 8443), MyHTTPRequestHandler) as httpd:
-        print(f"\n📊 SERVICIOS INICIADOS:")
-        print(f"📍 Tu IP Local: {ip_local}")
-        print(f"🔐 DNS Bloqueador: {ip_local}:5353")
-        print(f"🌐 Servidor Web: http://{ip_local}:8443")
-        print("\n" + "=" * 50)
-        print("Para acceder desde otros dispositivos usa la IP de red")
-        print("Presiona Ctrl+C para detener ambos servidores")
-        print("=" * 50 + "\n")
-        
-        httpd.serve_forever()
-        
+    manual_http = ManualHTTPServer(host=ip_local, port=8443, dns_server=dns_server)
+    manual_http.start()
+    print(f"\n📊 SERVICIOS INICIADOS:")
+    print(f"📍 Tu IP Local: {ip_local}")
+    print(f"🔐 DNS Bloqueador: {ip_local}:5353")
+    print(f"🌐 Servidor Web: http://{ip_local}:8443")
+    print("\n" + "=" * 50)
+    print("Para acceder desde otros dispositivos usa la IP de red")
+    print("Presiona Ctrl+C para detener ambos servidores")
+    print("=" * 50 + "\n")
+
+    # Mantener el hilo principal vivo hasta Ctrl+C
+    while True:
+        time.sleep(1)
+
 except KeyboardInterrupt:
-    # Esto se ejecutará si hay KeyboardInterrupt dentro del serve_forever()
     pass
 except Exception as e:
     print(f"❌ Error en servidor web: {e}")
 finally:
-    # Asegurarse de que el DNS se detenga incluso si hay errores
+    if 'manual_http' in locals() and manual_http:
+        manual_http.stop()
     if 'dns_server' in locals() or 'dns_server' in globals():
         dns_server.stop()
     print("\n✅ Todos los servicios detenidos correctamente")
