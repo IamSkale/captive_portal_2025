@@ -1,0 +1,44 @@
+{
+  "usuarios": [
+    {
+      "username": "admin",
+      "password": "admin123"
+    },
+    {
+      "username": "user1",
+      "password": "password1"
+    },
+    {
+      "username": "user2",
+      "password": "password2"
+    },
+    {
+      "username": "test",
+      "password": "test123"
+    },
+    {
+      "username": "guest",
+      "password": "guest123"
+    },
+    {
+      "username": "john",
+      "password": "doe123"
+    },
+    {
+      "username": "jane",
+      "password": "smith456"
+    },
+    {
+      "username": "root",
+      "password": "toor"
+    },
+    {
+      "username": "administrator",
+      "password": "adminpass"
+    },
+    {
+      "username": "demo",
+      "password": "demo123"
+    }
+  ]
+}
