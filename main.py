@@ -148,7 +148,10 @@ class ManualHTTPServer:
 
     def _load_template(self, file_name, context=None):
         """Cargar template HTML y reemplazar variables {{key}} por valores del contexto"""
-        with open(file_name, 'r', encoding='utf-8') as f:
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        full_path = os.path.join(script_dir, file_name)
+        
+        with open(full_path, 'r', encoding='utf-8') as f:
             content = f.read()
 
         if context:
@@ -224,9 +227,12 @@ class ManualHTTPServer:
             else:
                 # Servir archivos estáticos
                 file_path = parsed.path.lstrip('/')
-                if file_path and os.path.exists(file_path) and os.path.isfile(file_path):
+                script_dir = os.path.dirname(os.path.abspath(__file__))
+                full_path = os.path.join(script_dir, file_path)
+                
+                if file_path and os.path.exists(full_path) and os.path.isfile(full_path):
                     try:
-                        with open(file_path, 'rb') as f:
+                        with open(full_path, 'rb') as f:
                             content = f.read()
                         mime = 'application/octet-stream'
                         if file_path.endswith('.html') or file_path.endswith('.htm'):
