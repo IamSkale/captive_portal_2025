@@ -6,9 +6,10 @@ import sys
 import urllib.parse
 import json
 import os
+import errno
 
 class SmartDNS:
-    def __init__(self, web_ip='127.0.0.1', port=5353):
+    def __init__(self, web_ip='127.0.0.1', port=53):
         self.web_ip = web_ip
         self.port = port
         self.sock = None
@@ -20,8 +21,31 @@ class SmartDNS:
         self.lock = threading.Lock()
     
     def setup_socket(self):
+        # Si ya existe un socket en esta instancia, cerrarlo antes de crear uno nuevo
+        if self.sock:
+            try:
+                self.sock.close()
+            except Exception:
+                pass
+            self.sock = None
+
+        # Crear socket UDP para DNS
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.sock.bind(('', self.port))
+        try:
+            self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        except Exception:
+            pass
+
+        try:
+            self.sock.bind(('', self.port))
+        except OSError as e:
+            if e.errno == errno.EACCES:
+                raise PermissionError(f"Se requiere permiso para enlazar al puerto {self.port}. Ejecuta con privilegios (ej.: sudo).")
+            elif e.errno == errno.EADDRINUSE:
+                raise OSError(f"Puerto {self.port} ya está en uso. Asegúrate de no tener otro servidor DNS corriendo.")
+            else:
+                raise
+
         self.sock.settimeout(1.0)
     
     def manejar_dns_externo(self, data, addr):
@@ -101,7 +125,11 @@ class SmartDNS:
     def stop(self):
         self.running = False
         if self.sock:
-            self.sock.close()
+            try:
+                self.sock.close()
+            except Exception:
+                pass
+            self.sock = None
 
 def verificar_credenciales(username, password):
     """Verificar credenciales contra un archivo JSON (función de módulo)."""
@@ -137,9 +165,30 @@ class ManualHTTPServer:
         self.thread = None
 
     def start(self):
+        # Si ya existe un socket en esta instancia, cerrarlo antes de crear uno nuevo
+        if self.sock:
+            try:
+                self.sock.close()
+            except Exception:
+                pass
+            self.sock = None
+
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self.sock.bind((self.host, self.port))
+        try:
+            self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        except Exception:
+            pass
+
+        try:
+            self.sock.bind((self.host, self.port))
+        except OSError as e:
+            if e.errno == errno.EACCES:
+                raise PermissionError(f"Se requiere permiso para enlazar al puerto {self.port}. Ejecuta con privilegios.")
+            elif e.errno == errno.EADDRINUSE:
+                raise OSError(f"Puerto {self.port} ya está en uso. Asegúrate de no tener otro servidor web corriendo.")
+            else:
+                raise
+
         self.sock.listen(5)
         self.sock.settimeout(1.0)
         self.running = True
@@ -165,7 +214,11 @@ class ManualHTTPServer:
         self.running = False
         try:
             if self.sock:
-                self.sock.close()
+                try:
+                    self.sock.close()
+                except Exception:
+                    pass
+                self.sock = None
         except Exception:
             pass
 
@@ -300,7 +353,7 @@ print("=" * 50)
 print("🌐 SISTEMA DE REDIRECCIÓN DNS")
 print("=" * 50)
 
-dns_server = SmartDNS(web_ip=ip_local, port=5353)
+dns_server = SmartDNS(web_ip=ip_local, port=53)
 # Nota: Para usar puerto 53, ejecutar con: sudo python main.py
 
 dns_thread = threading.Thread(target=dns_server.run, daemon=True)
@@ -314,7 +367,7 @@ try:
     manual_http.start()
     print(f"\n📊 SERVICIOS INICIADOS:")
     print(f"📍 Tu IP Local: {ip_local}")
-    print(f"🔐 DNS Bloqueador: {ip_local}:5353")
+    print(f"🔐 DNS Bloqueador: {ip_local}:53")
     print(f"🌐 Servidor Web: http://{ip_local}:8443")
     print("\n" + "=" * 50)
     print("Para acceder desde otros dispositivos usa la IP de red")
