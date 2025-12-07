@@ -151,6 +151,28 @@ class ManualHTTPServer:
         self.thread = threading.Thread(target=self._serve_loop, daemon=True)
         self.thread.start()
 
+    def _load_template(self, file_name, context=None):
+        """Leer un archivo HTML desde disco y aplicar un diccionario de contexto simple.
+        Reemplaza `{{key}}` o `{key}` por su valor en el contenido.
+        Retorna `None` si falla la lectura para permitir un fallback.
+        """
+        try:
+            path = file_name
+            if not os.path.isabs(path):
+                path = os.path.join(os.getcwd(), file_name)
+            with open(path, 'r', encoding='utf-8') as f:
+                content = f.read()
+
+            if context:
+                for k, v in context.items():
+                    content = content.replace('{{' + k + '}}', str(v))
+                    content = content.replace('{' + k + '}', str(v))
+
+            return content
+        except Exception as e:
+            print(f"⚠️  No se pudo cargar plantilla {file_name}: {e}")
+            return None
+
     def stop(self):
         self.running = False
         try:
@@ -206,9 +228,13 @@ class ManualHTTPServer:
                     self.dns_server.permitir_dispositivo(client_ip)
 
                 if es_valido:
-                    body = f'''<!DOCTYPE html><html><head><title>Acceso Concedido</title></head><body><h2>✅ ACCESO CONCEDIDO</h2><p>Bienvenido, <strong>{username}</strong></p></body></html>'''
+                    body = self._load_template('success.html', {'username': username})
+                    if body is None:
+                        body = f'''<!DOCTYPE html><html><head><title>Acceso Concedido</title></head><body><h2>✅ ACCESO CONCEDIDO</h2><p>Bienvenido, <strong>{username}</strong></p></body></html>'''
                 else:
-                    body = '''<!DOCTYPE html><html><head><title>Acceso Denegado</title></head><body><h2>❌ ACCESO DENEGADO</h2><p>Usuario o contraseña incorrectos.</p><p><a href="/">Volver al login</a></p></body></html>'''
+                    body = self._load_template('error.html')
+                    if body is None:
+                        body = '''<!DOCTYPE html><html><head><title>Acceso Denegado</title></head><body><h2>❌ ACCESO DENEGADO</h2><p>Usuario o contraseña incorrectos.</p><p><a href="/">Volver al login</a></p></body></html>'''
 
                 resp = 'HTTP/1.1 200 OK\r\n'
                 resp += 'Content-Type: text/html; charset=utf-8\r\n'
@@ -221,7 +247,9 @@ class ManualHTTPServer:
 
             # Si la ruta es '/' servir un formulario simple
             if parsed.path == '/' or parsed.path == '':
-                body = '''<!DOCTYPE html><html><head><meta charset="utf-8"><title>Login</title></head><body><h2>Portal de Acceso</h2><form method="get" action="/">Usuario: <input name="user"><br>Contraseña: <input name="pass" type="password"><br><button type="submit">Entrar</button></form></body></html>'''
+                body = self._load_template('front.html')
+                if body is None:
+                    body = '''<!DOCTYPE html><html><head><meta charset="utf-8"><title>Login</title></head><body><h2>Portal de Acceso</h2><form method="get" action="/">Usuario: <input name="user"><br>Contraseña: <input name="pass" type="password"><br><button type="submit">Entrar</button></form></body></html>'''
                 resp = 'HTTP/1.1 200 OK\r\n'
                 resp += 'Content-Type: text/html; charset=utf-8\r\n'
                 resp += f'Content-Length: {len(body.encode("utf-8"))}\r\n'
@@ -256,8 +284,10 @@ class ManualHTTPServer:
                 except Exception as e:
                     print(f"Error leyendo archivo {file_path}: {e}")
 
-            # Si nada aplica, responder 404
-            body = '<h1>404 Not Found</h1>'
+            # Si nada aplica, intentar cargar not_found.html y fallback a 404 simple
+            body = self._load_template('not_found.html')
+            if body is None:
+                body = '<h1>404 Not Found</h1>'
             resp = 'HTTP/1.1 404 Not Found\r\n'
             resp += 'Content-Type: text/html; charset=utf-8\r\n'
             resp += f'Content-Length: {len(body.encode("utf-8"))}\r\n'

@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Acceso Concedido</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div class="login-container">
+        <div class="login-box success-box">
+            <h2>✅ ACCESO CONCEDIDO</h2>
+            <p>Bienvenido, <strong id="username"></strong></p>
+        </div>
+    </div>
+    <script>
+        // Extraer el username de los parámetros de la URL
+        const params = new URLSearchParams(window.location.search);
+        const username = params.get('user') || params.get('username') || params.get('usuario');
+        if (username) {
+            document.getElementById('username').textContent = username;
+        }
+    </script>
+</body>
+</html>
