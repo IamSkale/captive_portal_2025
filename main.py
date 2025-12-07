@@ -27,7 +27,6 @@ class SmartDNS:
     def manejar_dns_externo(self, data, addr):
         """Consultar a DNS real y reenviar respuesta"""
         try:
-            # Crear socket para consultar DNS real
             with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as dns_socket:
                 dns_socket.settimeout(2.0)
                 dns_socket.sendto(data, (self.dns_real, 53))
@@ -42,28 +41,24 @@ class SmartDNS:
             client_ip = addr[0]
             
             with self.lock:
-                # Verificar si este dispositivo ya hizo login
                 if client_ip in self.dispositivos_permitidos:
-                    # CONSULTA DNS REAL
                     respuesta_real = self.manejar_dns_externo(data, addr)
                     if respuesta_real:
                         self.sock.sendto(respuesta_real, addr)
                         print(f"🌐 DNS Real para {client_ip}")
                     return
                 else:
-                    # BLOQUEAR - redirigir a portal de login
                     self.dispositivos_bloqueados[client_ip] = time.time()
-                    
-                    # Respuesta DNS que redirige todo a nuestro servidor web
-                    response = data[:2] + b'\x81\x80'
-                    response += data[4:6] + data[4:6]
-                    response += b'\x00\x00\x00\x00'
-                    response += data[12:]
-                    response += b'\xc0\x0c'
-                    response += b'\x00\x01\x00\x01'
-                    response += b'\x00\x00\x00\x3c'
-                    response += b'\x00\x04'
-                    response += socket.inet_aton(self.web_ip)
+                    # Construir respuesta DNS que redirige a nuestro servidor
+                    response = data[:2] + b'\x81\x80'  # Copiar ID y marcar como respuesta
+                    response += data[4:6] + data[4:6]  # Copiar counts de pregunta y respuesta
+                    response += b'\x00\x00\x00\x00'  # Authority y Additional sections vacíos
+                    response += data[12:]  # Copiar la pregunta original
+                    response += b'\xc0\x0c'  # Puntero a la pregunta (compresión DNS)
+                    response += b'\x00\x01\x00\x01'  # Tipo A (IPv4) y clase IN
+                    response += b'\x00\x00\x00\x3c'  # TTL de 60 segundos
+                    response += b'\x00\x04'  # Longitud de la dirección (4 bytes)
+                    response += socket.inet_aton(self.web_ip)  # IP a la que redirigir
                     
                     self.sock.sendto(response, addr)
                     print(f"🔒 DNS Bloqueado para {client_ip}")
@@ -152,26 +147,16 @@ class ManualHTTPServer:
         self.thread.start()
 
     def _load_template(self, file_name, context=None):
-        """Leer un archivo HTML desde disco y aplicar un diccionario de contexto simple.
-        Reemplaza `{{key}}` o `{key}` por su valor en el contenido.
-        Retorna `None` si falla la lectura para permitir un fallback.
-        """
-        try:
-            path = file_name
-            if not os.path.isabs(path):
-                path = os.path.join(os.getcwd(), file_name)
-            with open(path, 'r', encoding='utf-8') as f:
-                content = f.read()
+        """Cargar template HTML y reemplazar variables {{key}} por valores del contexto"""
+        with open(file_name, 'r', encoding='utf-8') as f:
+            content = f.read()
 
-            if context:
-                for k, v in context.items():
-                    content = content.replace('{{' + k + '}}', str(v))
-                    content = content.replace('{' + k + '}', str(v))
+        if context:
+            for k, v in context.items():
+                content = content.replace('{{' + k + '}}', str(v))
+                content = content.replace('{' + k + '}', str(v))
 
-            return content
-        except Exception as e:
-            print(f"⚠️  No se pudo cargar plantilla {file_name}: {e}")
-            return None
+        return content
 
     def stop(self):
         self.running = False
@@ -218,73 +203,56 @@ class ManualHTTPServer:
             params = urllib.parse.parse_qs(parsed.query)
             client_ip = addr[0]
 
-            # Si hay credenciales en la URL
+            # Extraer credenciales con múltiples nombres de parámetro posibles
             username = params.get('username', params.get('user', params.get('usuario', [''])))[0] if params else ''
             password = params.get('password', params.get('pass', params.get('contrasenna', [''])))[0] if params else ''
 
+            body = None
+            status = '200 OK'
+            
             if method == 'GET' and username and password:
                 es_valido = verificar_credenciales(username, password)
                 if es_valido and self.dns_server:
                     self.dns_server.permitir_dispositivo(client_ip)
-
+                body = self._load_template('success.html' if es_valido else 'error.html')
                 if es_valido:
-                    body = self._load_template('success.html', {'username': username})
-                else:
-                    body = self._load_template('error.html')
+                    body = body.replace('{username}', username).replace('{{username}}', username)
 
-                resp = 'HTTP/1.1 200 OK\r\n'
-                resp += 'Content-Type: text/html; charset=utf-8\r\n'
-                resp += f'Content-Length: {len(body.encode("utf-8"))}\r\n'
-                resp += 'Access-Control-Allow-Origin: *\r\n'
-                resp += 'Connection: close\r\n\r\n'
-                conn.sendall(resp.encode('utf-8') + body.encode('utf-8'))
-                conn.close()
-                return
-
-            # Si la ruta es '/' servir un formulario simple
-            if parsed.path == '/' or parsed.path == '':
+            elif parsed.path == '/' or parsed.path == '':
                 body = self._load_template('front.html')
-                resp = 'HTTP/1.1 200 OK\r\n'
-                resp += 'Content-Type: text/html; charset=utf-8\r\n'
-                resp += f'Content-Length: {len(body.encode("utf-8"))}\r\n'
-                resp += 'Access-Control-Allow-Origin: *\r\n'
-                resp += 'Connection: close\r\n\r\n'
-                conn.sendall(resp.encode('utf-8') + body.encode('utf-8'))
-                conn.close()
-                return
 
-            # Intentar servir archivo estático relativo al path
-            file_path = parsed.path.lstrip('/')
-            if file_path and os.path.exists(file_path) and os.path.isfile(file_path):
-                try:
-                    with open(file_path, 'rb') as f:
-                        content = f.read()
-                    mime = 'application/octet-stream'
-                    if file_path.endswith('.html') or file_path.endswith('.htm'):
-                        mime = 'text/html; charset=utf-8'
-                    elif file_path.endswith('.css'):
-                        mime = 'text/css'
-                    elif file_path.endswith('.js'):
-                        mime = 'application/javascript'
+            else:
+                # Servir archivos estáticos
+                file_path = parsed.path.lstrip('/')
+                if file_path and os.path.exists(file_path) and os.path.isfile(file_path):
+                    try:
+                        with open(file_path, 'rb') as f:
+                            content = f.read()
+                        mime = 'application/octet-stream'
+                        if file_path.endswith('.html') or file_path.endswith('.htm'):
+                            mime = 'text/html; charset=utf-8'
+                        elif file_path.endswith('.css'):
+                            mime = 'text/css'
+                        elif file_path.endswith('.js'):
+                            mime = 'application/javascript'
+                        resp = 'HTTP/1.1 200 OK\r\n'
+                        resp += f'Content-Type: {mime}\r\n'
+                        resp += f'Content-Length: {len(content)}\r\n'
+                        resp += 'Access-Control-Allow-Origin: *\r\n'
+                        resp += 'Connection: close\r\n\r\n'
+                        conn.sendall(resp.encode('utf-8') + content)
+                        conn.close()
+                        return
+                    except Exception as e:
+                        print(f"Error leyendo archivo {file_path}: {e}")
+                
+                body = self._load_template('not_found.html')
+                status = '404 Not Found'
 
-                    resp = 'HTTP/1.1 200 OK\r\n'
-                    resp += f'Content-Type: {mime}\r\n'
-                    resp += f'Content-Length: {len(content)}\r\n'
-                    resp += 'Access-Control-Allow-Origin: *\r\n'
-                    resp += 'Connection: close\r\n\r\n'
-                    conn.sendall(resp.encode('utf-8') + content)
-                    conn.close()
-                    return
-                except Exception as e:
-                    print(f"Error leyendo archivo {file_path}: {e}")
-
-            # Si nada aplica, intentar cargar not_found.html y fallback a 404 simple
-            body = self._load_template('not_found.html')
-            if body is None:
-                body = '<h1>404 Not Found</h1>'
-            resp = 'HTTP/1.1 404 Not Found\r\n'
+            resp = f'HTTP/1.1 {status}\r\n'
             resp += 'Content-Type: text/html; charset=utf-8\r\n'
             resp += f'Content-Length: {len(body.encode("utf-8"))}\r\n'
+            resp += 'Access-Control-Allow-Origin: *\r\n'
             resp += 'Connection: close\r\n\r\n'
             conn.sendall(resp.encode('utf-8') + body.encode('utf-8'))
             conn.close()
@@ -298,7 +266,7 @@ class ManualHTTPServer:
 
 
 def obtener_ip():
-    """Obtener la IP local de la máquina"""
+    """Obtener IP local conectando a DNS externo"""
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
         s.connect(("8.8.8.8", 80))
@@ -310,40 +278,31 @@ def obtener_ip():
     return ip
 
 def signal_handler(sig, frame):
-    """Manejador para Ctrl+C"""
     print("\n\n🔴 Señal Ctrl+C recibida. Deteniendo servidores...")
     
-    # Detener el servidor DNS si existe
     if 'dns_server' in globals():
         dns_server.stop()
-    
-    # Salir del programa
     print("👋 Programa terminado")
     sys.exit(0)
 
-# Configurar el manejador de señales para Ctrl+C
+# Configurar manejador de señales para Ctrl+C
 signal.signal(signal.SIGINT, signal_handler)
 
-# Obtener IP local
 ip_local = obtener_ip()
 
 print("=" * 50)
 print("🌐 SISTEMA DE REDIRECCIÓN DNS")
 print("=" * 50)
 
-# Crear instancia del servidor DNS
 dns_server = SmartDNS(web_ip=ip_local, port=5353)
-# Nota: Si quieres usar puerto 53, ejecuta con: sudo python main.py
+# Nota: Para usar puerto 53, ejecutar con: sudo python main.py
 
-# Iniciar el servidor DNS en un hilo
 dns_thread = threading.Thread(target=dns_server.run, daemon=True)
 dns_thread.start()
 
-# Esperar un momento para que el DNS inicie
-import time
-time.sleep(0.5)
+time.sleep(0.5)  # Esperar a que DNS inicie
 
-# Iniciar el servidor web (servidor HTTP manual)
+# Iniciar servidor web
 try:
     manual_http = ManualHTTPServer(host=ip_local, port=8443, dns_server=dns_server)
     manual_http.start()
@@ -356,7 +315,6 @@ try:
     print("Presiona Ctrl+C para detener ambos servidores")
     print("=" * 50 + "\n")
 
-    # Mantener el hilo principal vivo hasta Ctrl+C
     while True:
         time.sleep(1)
 
