@@ -7,6 +7,7 @@ import urllib.parse
 import json
 import os
 import errno
+import subprocess
 
 class SmartDNS:
     def __init__(self, web_ip='127.0.0.1', port=53):
@@ -91,13 +92,23 @@ class SmartDNS:
             print(f"Error DNS: {e}")
     
     def permitir_dispositivo(self, client_ip):
-        """Permitir que un dispositivo use DNS real"""
+        """Permitir que un dispositivo use DNS real y desbloquear firewall"""
         with self.lock:
             if client_ip in self.dispositivos_bloqueados:
                 del self.dispositivos_bloqueados[client_ip]
             
             self.dispositivos_permitidos.add(client_ip)
             print(f"✅ Permitiendo DNS real para: {client_ip}")
+            
+            # Desbloquear en firewall
+            try:
+                script_dir = os.path.dirname(os.path.abspath(__file__))
+                firewall_script = os.path.join(script_dir, 'firewall_portal.sh')
+                subprocess.run(['sudo', 'bash', firewall_script, 'allow', client_ip], 
+                             capture_output=True, timeout=5)
+                print(f"🔥 Firewall desbloqueado para: {client_ip}")
+            except Exception as e:
+                print(f"⚠️  Error desbloqueando firewall: {e}")
     
     def run(self):
         try:
