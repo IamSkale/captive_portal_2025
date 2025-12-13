@@ -9,8 +9,11 @@
 <body>
     <div class="login-container">
         <div class="login-box success-box">
-            <h2>✅ ACCESO CONCEDIDO</h2>
-            <p>Bienvenido, <strong id="username"></strong></p>
+                <h2>✅ ACCESO CONCEDIDO</h2>
+                <p>Bienvenido, <strong id="username"></strong></p>
+                <div style="margin-top: 20px;">
+                    <button id="logoutBtn" class="logout-btn">Cerrar sesión</button>
+                </div>
         </div>
     </div>
     <script>
@@ -19,6 +22,16 @@
         const username = params.get('user') || params.get('username') || params.get('usuario');
         if (username) {
             document.getElementById('username').textContent = username;
+        }
+
+        // Botón de logout: redirige a '/logout' para que el servidor reactiva el bloqueo
+        const logoutBtn = document.getElementById('logoutBtn');
+        if (logoutBtn) {
+            logoutBtn.addEventListener('click', () => {
+                // Pasamos el username por si queremos usarlo en backend o logs
+                const u = encodeURIComponent(username || '');
+                window.location.href = '/logout?user=' + u;
+            });
         }
     </script>
 </body>

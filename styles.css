@@ -80,6 +80,30 @@ body {
     transform: translateY(0);
 }
 
+/* Botón de logout */
+.logout-btn {
+    width: 100%;
+    padding: 12px;
+    background: linear-gradient(135deg, #ff5f6d 0%, #ffc371 100%);
+    color: white;
+    border: none;
+    border-radius: 5px;
+    font-size: 16px;
+    font-weight: bold;
+    cursor: pointer;
+    transition: transform 0.2s ease, opacity 0.2s ease;
+    margin-top: 10px;
+}
+
+.logout-btn:hover {
+    transform: translateY(-2px);
+    opacity: 0.95;
+}
+
+.logout-btn:active {
+    transform: translateY(0);
+}
+
 /* Efectos responsivos */
 @media (max-width: 480px) {
     .login-box {

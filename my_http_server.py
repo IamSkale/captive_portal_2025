@@ -125,6 +125,13 @@ class ManualHTTPServer:
 
             elif parsed.path == '/' or parsed.path == '':
                 body = self._load_template('front.html')
+            elif parsed.path == '/logout':
+                # Marca el cliente como bloqueado nuevamente y devuelve la página de inicio
+                try:
+                    aux.bloquear_dns_cliente(client_ip)
+                except Exception as e:
+                    print(f"Error al bloquear DNS del cliente {client_ip}: {e}")
+                body = self._load_template('front.html')
 
             else:
                 # Servir archivos estáticos
