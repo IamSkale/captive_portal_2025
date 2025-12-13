@@ -4,7 +4,6 @@ import os
 import socket
 
 def block_conections(ip):    
-    # Reglas para bloqueo absoluto: bloquear todo tráfico entrante y saliente
     reglas = [
         f"sudo iptables -I FORWARD 1 -d {ip} -j DROP", 
         f"sudo iptables -I FORWARD 1 -s {ip} -j DROP"
