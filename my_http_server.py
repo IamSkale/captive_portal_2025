@@ -4,7 +4,7 @@ import errno
 import threading
 import os
 import urllib.parse
-import aux
+import aux_functions
 
 class ManualHTTPServer:
     def __init__(self, host='0.0.0.0', port=8443):
@@ -117,20 +117,16 @@ class ManualHTTPServer:
             status = '200 OK'
             
             if method == 'GET' and username and password:
-                es_valido = aux.verificar_credenciales(username, password)
+                es_valido = aux_functions.check_credentials(username, password)
                 body = self._load_template('success.html' if es_valido else 'error.html')
                 if es_valido:
-                    aux.remover_bloqueo_dns_cliente(client_ip)
+                    aux_functions.remove_block(client_ip)
                     body = body.replace('{username}', username).replace('{{username}}', username)
 
             elif parsed.path == '/' or parsed.path == '':
                 body = self._load_template('front.html')
             elif parsed.path == '/logout':
-                # Marca el cliente como bloqueado nuevamente y devuelve la página de inicio
-                try:
-                    aux.bloquear_dns_cliente(client_ip)
-                except Exception as e:
-                    print(f"Error al bloquear DNS del cliente {client_ip}: {e}")
+                aux_functions.block_conections(client_ip)                
                 body = self._load_template('front.html')
 
             else:
@@ -177,4 +173,3 @@ class ManualHTTPServer:
                 conn.close()
             except Exception:
                 pass
-            print(f"Error manejando cliente HTTP {addr}: {e}")

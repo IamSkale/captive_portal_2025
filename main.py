@@ -1,8 +1,8 @@
 import time
-import aux
+import aux_functions
 import my_http_server
 
-ip_local = aux.obtener_ip()
+ip_local = aux_functions.get_ip()
 
 try:
     manual_http = my_http_server.ManualHTTPServer(host=ip_local, port=8443)
