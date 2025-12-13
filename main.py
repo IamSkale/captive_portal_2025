@@ -9,138 +9,25 @@ import os
 import errno
 import subprocess
 
-class SmartDNS:
-    def __init__(self, web_ip='127.0.0.1', port=53):
-        self.web_ip = web_ip
-        self.port = port
-        self.sock = None
-        self.running = False
-        self.dispositivos_bloqueados = {}  # IP -> timestamp
-        self.dispositivos_permitidos = set()  # IPs que ya hicieron login
-        self.dns_real = "8.8.8.8"  # DNS de Google
-        self.dns_alternativo = "1.1.1.1"  # DNS de Cloudflare
-        self.lock = threading.Lock()
+def bloquear_dns_cliente(ip):    
+    # Reglas para bloqueo absoluto: bloquear todo tráfico entrante y saliente
+    reglas = [
+        f"sudo iptables -I FORWARD 1 -d {ip} -j DROP", 
+        f"sudo iptables -I FORWARD 1 -s {ip} -j DROP"
+    ]
     
-    def setup_socket(self):
-        # Si ya existe un socket en esta instancia, cerrarlo antes de crear uno nuevo
-        if self.sock:
-            try:
-                self.sock.close()
-            except Exception:
-                pass
-            self.sock = None
+    for regla in reglas:
+        subprocess.run(regla.split(), check=True)
 
-        # Crear socket UDP para DNS
-        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        try:
-            self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        except Exception:
-            pass
-
-        try:
-            self.sock.bind(('', self.port))
-        except OSError as e:
-            if e.errno == errno.EACCES:
-                raise PermissionError(f"Se requiere permiso para enlazar al puerto {self.port}. Ejecuta con privilegios (ej.: sudo).")
-            elif e.errno == errno.EADDRINUSE:
-                raise OSError(f"Puerto {self.port} ya está en uso. Asegúrate de no tener otro servidor DNS corriendo.")
-            else:
-                raise
-
-        self.sock.settimeout(1.0)
     
-    def manejar_dns_externo(self, data, addr):
-        """Consultar a DNS real y reenviar respuesta"""
-        try:
-            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as dns_socket:
-                dns_socket.settimeout(2.0)
-                dns_socket.sendto(data, (self.dns_real, 53))
-                respuesta, _ = dns_socket.recvfrom(512)
-                return respuesta
-        except:
-            return None
+def remover_bloqueo_dns_cliente(ip):    
+    reglas = [
+        f"sudo iptables -I FORWARD 1 -s {ip} -j ACCEPT",  
+        f"sudo iptables -I FORWARD 1 -d {ip} -j ACCEPT"    
+    ]
     
-    def handle_dns_query(self, data, addr):
-        """Manejar consulta DNS inteligentemente"""
-        try:
-            client_ip = addr[0]
-            
-            with self.lock:
-                if client_ip in self.dispositivos_permitidos:
-                    respuesta_real = self.manejar_dns_externo(data, addr)
-                    if respuesta_real:
-                        self.sock.sendto(respuesta_real, addr)
-                        print(f"🌐 DNS Real para {client_ip}")
-                    return
-                else:
-                    self.dispositivos_bloqueados[client_ip] = time.time()
-                    # Construir respuesta DNS que redirige a nuestro servidor
-                    response = data[:2] + b'\x81\x80'  # Copiar ID y marcar como respuesta
-                    response += data[4:6] + data[4:6]  # Copiar counts de pregunta y respuesta
-                    response += b'\x00\x00\x00\x00'  # Authority y Additional sections vacíos
-                    response += data[12:]  # Copiar la pregunta original
-                    response += b'\xc0\x0c'  # Puntero a la pregunta (compresión DNS)
-                    response += b'\x00\x01\x00\x01'  # Tipo A (IPv4) y clase IN
-                    response += b'\x00\x00\x00\x3c'  # TTL de 60 segundos
-                    response += b'\x00\x04'  # Longitud de la dirección (4 bytes)
-                    response += socket.inet_aton(self.web_ip)  # IP a la que redirigir
-                    
-                    self.sock.sendto(response, addr)
-                    print(f"🔒 DNS Bloqueado para {client_ip}")
-                    
-        except Exception as e:
-            print(f"Error DNS: {e}")
-    
-    def permitir_dispositivo(self, client_ip):
-        """Permitir que un dispositivo use DNS real y desbloquear firewall"""
-        with self.lock:
-            if client_ip in self.dispositivos_bloqueados:
-                del self.dispositivos_bloqueados[client_ip]
-            
-            self.dispositivos_permitidos.add(client_ip)
-            print(f"✅ Permitiendo DNS real para: {client_ip}")
-            
-            # Desbloquear en firewall
-            try:
-                script_dir = os.path.dirname(os.path.abspath(__file__))
-                firewall_script = os.path.join(script_dir, 'firewall_portal.sh')
-                subprocess.run(['sudo', 'bash', firewall_script, 'allow', client_ip], 
-                             capture_output=True, timeout=5)
-                print(f"🔥 Firewall desbloqueado para: {client_ip}")
-            except Exception as e:
-                print(f"⚠️  Error desbloqueando firewall: {e}")
-    
-    def run(self):
-        try:
-            self.setup_socket()
-            self.running = True
-            
-            print(f"✅ DNS Inteligente en puerto {self.port}")
-            print(f"   DNS Real: {self.dns_real}")
-            print(f"   Portal: {self.web_ip}:8443")
-            
-            while self.running:
-                try:
-                    data, addr = self.sock.recvfrom(512)
-                    if self.running:
-                        threading.Thread(
-                            target=self.handle_dns_query,
-                            args=(data, addr),
-                            daemon=True
-                        ).start()
-                except socket.timeout:
-                    continue
-        except Exception as e:
-            print(f"❌ Error DNS: {e}")
-    
-    def stop(self):
-        self.running = False
-        if self.sock:
-            try:
-                self.sock.close()
-            except Exception:
-                pass
-            self.sock = None
+    for regla in reglas:
+        subprocess.run(regla.split(), check=True)
 
 def verificar_credenciales(username, password):
     """Verificar credenciales contra un archivo JSON (función de módulo)."""
@@ -166,17 +53,16 @@ def verificar_credenciales(username, password):
 
 
 class ManualHTTPServer:
-    """Servidor HTTP simple hecho con sockets que maneja GET y login por querystring."""
-    def __init__(self, host='0.0.0.0', port=8443, dns_server=None):
+    def __init__(self, host='0.0.0.0', port=8443):
         self.host = host
         self.port = port
-        self.dns_server = dns_server
         self.sock = None
         self.running = False
         self.thread = None
 
     def start(self):
-        # Si ya existe un socket en esta instancia, cerrarlo antes de crear uno nuevo
+        subprocess.run("sudo iptables -F FORWARD 2>/dev/null", shell=True)
+        subprocess.run("sudo iptables -P FORWARD DROP", shell=True)
         if self.sock:
             try:
                 self.sock.close()
@@ -207,7 +93,6 @@ class ManualHTTPServer:
         self.thread.start()
 
     def _load_template(self, file_name, context=None):
-        """Cargar template HTML y reemplazar variables {{key}} por valores del contexto"""
         script_dir = os.path.dirname(os.path.abspath(__file__))
         full_path = os.path.join(script_dir, file_name)
         
@@ -279,10 +164,9 @@ class ManualHTTPServer:
             
             if method == 'GET' and username and password:
                 es_valido = verificar_credenciales(username, password)
-                if es_valido and self.dns_server:
-                    self.dns_server.permitir_dispositivo(client_ip)
                 body = self._load_template('success.html' if es_valido else 'error.html')
                 if es_valido:
+                    remover_bloqueo_dns_cliente(client_ip)
                     body = body.replace('{username}', username).replace('{{username}}', username)
 
             elif parsed.path == '/' or parsed.path == '':
@@ -336,7 +220,6 @@ class ManualHTTPServer:
 
 
 def obtener_ip():
-    """Obtener IP local conectando a DNS externo"""
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
         s.connect(("8.8.8.8", 80))
@@ -347,42 +230,17 @@ def obtener_ip():
         s.close()
     return ip
 
-def signal_handler(sig, frame):
-    print("\n\n🔴 Señal Ctrl+C recibida. Deteniendo servidores...")
-    
-    if 'dns_server' in globals():
-        dns_server.stop()
-    print("👋 Programa terminado")
-    sys.exit(0)
-
-# Configurar manejador de señales para Ctrl+C
-signal.signal(signal.SIGINT, signal_handler)
-
 ip_local = obtener_ip()
 
-print("=" * 50)
-print("🌐 SISTEMA DE REDIRECCIÓN DNS")
-print("=" * 50)
-
-dns_server = SmartDNS(web_ip=ip_local, port=53)
-# Nota: Para usar puerto 53, ejecutar con: sudo python main.py
-
-dns_thread = threading.Thread(target=dns_server.run, daemon=True)
-dns_thread.start()
-
-time.sleep(0.5)  # Esperar a que DNS inicie
-
-# Iniciar servidor web
 try:
-    manual_http = ManualHTTPServer(host=ip_local, port=8443, dns_server=dns_server)
+    manual_http = ManualHTTPServer(host=ip_local, port=8443)
     manual_http.start()
+
     print(f"\n📊 SERVICIOS INICIADOS:")
     print(f"📍 Tu IP Local: {ip_local}")
-    print(f"🔐 DNS Bloqueador: {ip_local}:53")
     print(f"🌐 Servidor Web: http://{ip_local}:8443")
     print("\n" + "=" * 50)
-    print("Para acceder desde otros dispositivos usa la IP de red")
-    print("Presiona Ctrl+C para detener ambos servidores")
+    print("Presiona Ctrl+C para detener el servidor")
     print("=" * 50 + "\n")
 
     while True:
@@ -395,6 +253,4 @@ except Exception as e:
 finally:
     if 'manual_http' in locals() and manual_http:
         manual_http.stop()
-    if 'dns_server' in locals() or 'dns_server' in globals():
-        dns_server.stop()
     print("\n✅ Todos los servicios detenidos correctamente")
